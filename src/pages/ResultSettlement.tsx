@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { Copy, EyeOff, AlertTriangle, TrendingDown, Clock, ChevronDown, ChevronUp } from 'lucide-react'
+import { Copy, EyeOff, AlertTriangle, TrendingDown, Clock, ChevronDown, ChevronUp, GitCompareArrows, X, Star } from 'lucide-react'
 import { useGameStore } from '@/stores/gameStore'
 import RadarChart from '@/components/RadarChart'
 import StarRating from '@/components/StarRating'
@@ -61,11 +61,23 @@ function AnimatedCounter({ value, suffix = '%' }: { value: number; suffix?: stri
 export default function ResultSettlement() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const { simulationResult: result, levels, savePlan } = useGameStore()
+  const { simulationResult: result, levels, availableLevels, savePlan, studentRecords, currentStudent } = useGameStore()
   const [saved, setSaved] = useState(false)
   const [detailsOpen, setDetailsOpen] = useState(false)
+  const [showCompare, setShowCompare] = useState(false)
+  const [compareIdx, setCompareIdx] = useState<number | null>(null)
 
-  const level = levels.find((l) => l.id === id)
+  const level = availableLevels.find((l) => l.id === id) ?? levels.find((l) => l.id === id)
+
+  const currentRecord = useMemo(() => {
+    if (!currentStudent || !id) return null
+    return studentRecords.find((r) => r.studentId === currentStudent.id && r.levelId === id)
+  }, [studentRecords, currentStudent, id])
+
+  const savedPlans = useMemo(() => {
+    if (!currentRecord) return []
+    return [...currentRecord.plans].sort((a, b) => a.timestamp - b.timestamp)
+  }, [currentRecord])
 
   if (!result) {
     return (
@@ -230,6 +242,15 @@ export default function ResultSettlement() {
           >
             {saved ? '已保存' : '保存方案'}
           </button>
+          {saved && savedPlans.length >= 2 && (
+            <button
+              onClick={() => setShowCompare(true)}
+              className="px-6 py-2.5 rounded-lg font-medium border border-green-600 text-green-700 hover:bg-green-50 transition-colors flex items-center gap-2"
+            >
+              <GitCompareArrows className="w-4 h-4" />
+              对比历史方案
+            </button>
+          )}
           <button
             onClick={() => navigate(`/dispatch/${id}`)}
             className="px-6 py-2.5 rounded-lg font-medium border border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors"
@@ -243,7 +264,116 @@ export default function ResultSettlement() {
             返回地图
           </button>
         </motion.div>
+
+        {showCompare && savedPlans.length >= 2 && (
+          <ResultCompareModal
+            currentResult={result}
+            savedPlans={savedPlans}
+            compareIdx={compareIdx}
+            setCompareIdx={setCompareIdx}
+            onClose={() => { setShowCompare(false); setCompareIdx(null) }}
+          />
+        )}
       </div>
     </div>
+  )
+}
+
+function ResultCompareModal({ currentResult, savedPlans, compareIdx, setCompareIdx, onClose }: {
+  currentResult: any
+  savedPlans: { plan: any; result: any; timestamp: number }[]
+  compareIdx: number | null
+  setCompareIdx: (idx: number | null) => void
+  onClose: () => void
+}) {
+  const selectedPlan = compareIdx !== null ? savedPlans[compareIdx] : null
+
+  const metrics: { key: string; label: string; lowerBetter?: boolean }[] = [
+    { key: 'stars', label: '星级' },
+    { key: 'totalCost', label: '总成本(元)', lowerBetter: true },
+    { key: 'overlapPercentage', label: '重叠率(%)', lowerBetter: true },
+    { key: 'missPercentage', label: '漏喷率(%)', lowerBetter: true },
+    { key: 'acreEfficiency', label: '亩效' },
+    { key: 'onTimeRate', label: '准时率' },
+    { key: 'safetyScore', label: '安全分' },
+    { key: 'costScore', label: '成本分' },
+  ]
+
+  const getVal = (obj: any, key: string) => {
+    if (key === 'stars') return obj[key]
+    return Math.round(obj[key] * 10) / 10
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onClose}
+    >
+      <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-5">
+          <h3 className="text-lg font-bold" style={{ color: '#1B5E20' }}>方案对比</h3>
+          <button onClick={onClose} className="p-1 rounded-lg hover:bg-gray-100 text-gray-400">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-gray-700 mb-2">选择对比方案</label>
+          <select
+            value={compareIdx ?? ''}
+            onChange={(e) => setCompareIdx(e.target.value ? Number(e.target.value) : null)}
+            className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm bg-white"
+          >
+            <option value="">-- 选择历史方案 --</option>
+            {savedPlans.map((p, i) => (
+              <option key={i} value={i}>
+                第{i + 1}次 ({new Date(p.timestamp).toLocaleDateString()}) - ⭐{p.result.stars}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {selectedPlan && (
+          <div className="grid grid-cols-3 gap-4 text-sm">
+            <div className="font-semibold text-gray-500">指标</div>
+            <div className="font-semibold text-center text-green-700">当前方案</div>
+            <div className="font-semibold text-center text-blue-700">第{compareIdx! + 1}次方案</div>
+
+            {metrics.map((m) => {
+              const valA = getVal(currentResult, m.key)
+              const valB = getVal(selectedPlan.result, m.key)
+              const numA = typeof valA === 'number' ? valA : 0
+              const numB = typeof valB === 'number' ? valB : 0
+              const better = m.lowerBetter ? numA < numB : numA > numB
+              return (
+                <div key={m.key} className="contents">
+                  <div className="py-2 text-gray-600 border-b border-gray-100">{m.label}</div>
+                  <div className={`py-2 text-center font-medium border-b border-gray-100 ${
+                    better ? 'text-green-600' : numA === numB ? 'text-gray-700' : 'text-gray-400'
+                  }`}>
+                    {m.key === 'stars' ? '⭐'.repeat(valA as number) || '0' : valA}
+                  </div>
+                  <div className={`py-2 text-center font-medium border-b border-gray-100 ${
+                    !better ? 'text-green-600' : numA === numB ? 'text-gray-700' : 'text-gray-400'
+                  }`}>
+                    {m.key === 'stars' ? '⭐'.repeat(valB as number) || '0' : valB}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        <div className="flex justify-end mt-5">
+          <button onClick={onClose}
+            className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-600 hover:bg-gray-50 transition">
+            关闭
+          </button>
+        </div>
+      </div>
+    </motion.div>
   )
 }

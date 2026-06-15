@@ -1,5 +1,7 @@
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import { Plane, Map, BookOpen, GraduationCap, User } from 'lucide-react'
+import { Plane, Map, BookOpen, GraduationCap, User, ChevronDown, ChevronUp, Check } from 'lucide-react'
+import { useState, useRef, useEffect } from 'react'
+import { useGameStore } from '@/stores/gameStore'
 
 const navItems = [
   { to: '/', label: '关卡地图', icon: Map },
@@ -16,11 +18,60 @@ const pageNames: Record<string, string> = {
   '/result': '结果结算',
 }
 
+function StudentSelector() {
+  const currentStudent = useGameStore((s) => s.currentStudent)
+  const getAllStudents = useGameStore((s) => s.getAllStudents)
+  const setCurrentStudent = useGameStore((s) => s.setCurrentStudent)
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  const students = getAllStudents()
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2 px-4 py-2 rounded-lg bg-white/10 hover:bg-white/15 transition"
+      >
+        <User className="w-4 h-4 text-white/70" />
+        <span className="flex-1 text-left text-sm text-white/90 truncate">{currentStudent.name}</span>
+        {open ? <ChevronUp className="w-3.5 h-3.5 text-white/50" /> : <ChevronDown className="w-3.5 h-3.5 text-white/50" />}
+      </button>
+      {open && (
+        <div className="absolute bottom-full left-0 right-0 mb-1 bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden z-50">
+          <div className="px-3 py-2 text-xs text-gray-400 border-b border-gray-100">切换学员</div>
+          {students.map((s) => (
+            <button
+              key={s.id}
+              onClick={() => { setCurrentStudent(s); setOpen(false) }}
+              className={`w-full flex items-center gap-2 px-3 py-2.5 text-sm transition hover:bg-gray-50 ${
+                s.id === currentStudent.id ? 'text-green-700 bg-green-50' : 'text-gray-700'
+              }`}
+            >
+              <span className="flex-1 text-left">{s.name}</span>
+              {s.id === currentStudent.id && <Check className="w-4 h-4 text-green-600" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function Layout() {
   const location = useLocation()
   const pathPrefix = '/' + location.pathname.split('/')[1]
   const currentPage = pageNames[location.pathname] || pageNames[pathPrefix] || '植保调度仿真'
   const isFullscreen = pathPrefix === '/dispatch'
+  const currentStudent = useGameStore((s) => s.currentStudent)
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -54,10 +105,7 @@ export default function Layout() {
           </nav>
 
           <div className="px-3 pb-6">
-            <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/10">
-              <User className="w-4 h-4 text-white/70" />
-              <span className="text-sm text-white/70">学员模式</span>
-            </div>
+            <StudentSelector />
           </div>
         </aside>
       )}
@@ -70,7 +118,7 @@ export default function Layout() {
             </span>
             <div className="flex items-center gap-2">
               <User className="w-5 h-5" style={{ color: '#1B5E20' }} />
-              <span className="text-sm" style={{ color: '#1B5E20' }}>学员</span>
+              <span className="text-sm" style={{ color: '#1B5E20' }}>{currentStudent.name}</span>
             </div>
           </header>
         )}
