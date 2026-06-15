@@ -37,11 +37,11 @@ const EVENT_ICONS: Record<RandomEventType, typeof Wind> = {
 export default function MissionPanel() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const levels = useGameStore((s) => s.levels);
+  const availableLevels = useGameStore((s) => s.availableLevels);
   const drones = useGameStore((s) => s.drones);
   const setCurrentLevel = useGameStore((s) => s.setCurrentLevel);
 
-  const level = levels.find((l) => l.id === id);
+  const level = availableLevels.find((l) => l.id === id);
 
   if (!level) {
     return (

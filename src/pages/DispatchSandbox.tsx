@@ -3,13 +3,13 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
   MousePointer, PenTool, Battery, Eraser,
   Play, Pause, Plus, X, ArrowLeft,
-  AlertTriangle, AlertCircle,
+  AlertTriangle, AlertCircle, Info,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useGameStore } from '@/stores/gameStore';
 import {
-  evaluatePlan, getActiveEvents,
-  calculateTotalCost, checkDangerousCrossings,
+  getActiveEvents,
+  calculateTotalCost, checkDangerousCrossings, canEvaluate,
 } from '@/engine/simulation';
 import EventNotification from '@/components/EventNotification';
 import type { Route as TRoute, SceneType, Level } from '@/types';
@@ -210,7 +210,7 @@ function CanvasMap({
 export default function DispatchSandbox() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const levels = useGameStore((s) => s.levels);
+  const availableLevels = useGameStore((s) => s.availableLevels);
   const currentPlan = useGameStore((s) => s.currentPlan);
   const drones = useGameStore((s) => s.drones);
   const isSimulating = useGameStore((s) => s.isSimulating);
@@ -221,16 +221,17 @@ export default function DispatchSandbox() {
   const removeRoute = useGameStore((s) => s.removeRoute);
   const addPurchase = useGameStore((s) => s.addPurchase);
   const startSimulation = useGameStore((s) => s.startSimulation);
+  const runEvaluation = useGameStore((s) => s.runEvaluation);
   const updateSimulationTime = useGameStore((s) => s.updateSimulationTime);
   const setActiveEvent = useGameStore((s) => s.setActiveEvent);
-  const completeSimulation = useGameStore((s) => s.completeSimulation);
 
   const [selectedTool, setSelectedTool] = useState<Tool>('select');
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
   const [simSpeed, setSimSpeed] = useState<1 | 2 | 4>(1);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const level = levels.find((l) => l.id === id);
+  const level = availableLevels.find((l) => l.id === id);
   const routes = currentPlan?.routes ?? [];
   const selectedRoute = routes.find((r) => r.id === selectedRouteId) ?? null;
 
@@ -302,15 +303,25 @@ export default function DispatchSandbox() {
 
   const handleStartSimulation = () => {
     if (!currentPlan || !level) return;
-    startSimulation();
-    setIsPlaying(true);
+    const check = startSimulation();
+    if (check.ok) {
+      setIsPlaying(true);
+      setErrorMessage(null);
+    } else {
+      setErrorMessage(check.reason ?? '无法开始模拟');
+      setTimeout(() => setErrorMessage(null), 3000);
+    }
   };
 
   const handleFinishEvaluation = () => {
     if (!currentPlan || !level) return;
-    const result = evaluatePlan(currentPlan, level);
-    completeSimulation(result);
-    navigate(`/result/${id}`);
+    const result = runEvaluation();
+    if (result.ok) {
+      navigate(`/result/${id}`);
+    } else {
+      setErrorMessage(result.reason ?? '无法结算');
+      setTimeout(() => setErrorMessage(null), 3000);
+    }
   };
 
   if (!level || !currentPlan) {
@@ -321,7 +332,7 @@ export default function DispatchSandbox() {
     );
   }
 
-  const budgetUsed = calculateTotalCost(currentPlan, level);
+  const budgetUsed = calculateTotalCost(currentPlan, level, drones);
   const budgetRatio = budgetUsed / level.budget;
   const warnings = checkDangerousCrossings(currentPlan, level);
 
@@ -571,7 +582,18 @@ export default function DispatchSandbox() {
         </motion.div>
       </div>
 
-      <div className="h-16 bg-gray-900 flex items-center px-4 gap-4 shrink-0">
+      <div className="h-16 bg-gray-900 flex items-center px-4 gap-4 shrink-0 relative">
+        {errorMessage && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="absolute -top-10 left-1/2 -translate-x-1/2 px-4 py-2 bg-red-600 text-white text-sm rounded-md shadow-lg flex items-center gap-2"
+          >
+            <AlertTriangle className="w-4 h-4" />
+            {errorMessage}
+          </motion.div>
+        )}
+
         <button
           onClick={() => navigate(`/mission/${id}`)}
           className="flex items-center gap-1 text-gray-300 hover:text-white text-sm transition"
@@ -581,7 +603,8 @@ export default function DispatchSandbox() {
         <div className="flex-1 flex items-center justify-center gap-4">
           <button
             onClick={() => { if (isSimulating) setIsPlaying(!isPlaying); }}
-            className="w-9 h-9 rounded-full bg-gray-700 flex items-center justify-center text-white hover:bg-gray-600 transition"
+            className="w-9 h-9 rounded-full bg-gray-700 flex items-center justify-center text-white hover:bg-gray-600 transition disabled:opacity-50"
+            disabled={!isSimulating}
           >
             {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
           </button>
@@ -608,7 +631,9 @@ export default function DispatchSandbox() {
         {!isSimulating && (
           <button
             onClick={handleStartSimulation}
-            className="px-4 py-2 rounded-md bg-green-600 text-white text-sm font-medium hover:bg-green-700 transition"
+            className="px-4 py-2 rounded-md bg-green-600 text-white text-sm font-medium hover:bg-green-700 transition disabled:bg-gray-600 disabled:cursor-not-allowed disabled:opacity-70"
+            disabled={!canEvaluate(currentPlan).ok}
+            title={canEvaluate(currentPlan).reason}
           >
             模拟运行
           </button>

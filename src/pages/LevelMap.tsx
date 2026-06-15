@@ -93,26 +93,31 @@ function ProgressRing({ progress, totalStars, maxStars }: {
 export default function LevelMap() {
   const [activeFilter, setActiveFilter] = useState<FilterKey>('all');
   const navigate = useNavigate();
-  const levels = useGameStore((s) => s.levels);
+  const availableLevels = useGameStore((s) => s.availableLevels);
+  const customCases = useGameStore((s) => s.customCases);
   const getLevelStars = useGameStore((s) => s.getLevelStars);
 
+  const isCustomCase = (levelId: string) => {
+    return customCases.some((c) => c.level.id === levelId);
+  };
+
   const filteredLevels = useMemo(() => {
-    if (activeFilter === 'all') return levels;
-    return levels.filter((l) => l.scene === activeFilter);
-  }, [levels, activeFilter]);
+    if (activeFilter === 'all') return availableLevels;
+    return availableLevels.filter((l) => l.scene === activeFilter);
+  }, [availableLevels, activeFilter]);
 
   const totalStars = useMemo(
-    () => levels.reduce((sum, l) => sum + getLevelStars(l.id), 0),
-    [levels, getLevelStars]
+    () => availableLevels.reduce((sum, l) => sum + getLevelStars(l.id), 0),
+    [availableLevels, getLevelStars]
   );
-  const maxStars = levels.length * 3;
+  const maxStars = availableLevels.length * 3;
   const progress = maxStars > 0 ? (totalStars / maxStars) * 100 : 0;
   const rank = getRank(totalStars);
   const rankColor = getRankColor(totalStars);
 
   const completedLevels = useMemo(
-    () => levels.filter((l) => getLevelStars(l.id) > 0),
-    [levels, getLevelStars]
+    () => availableLevels.filter((l) => getLevelStars(l.id) > 0),
+    [availableLevels, getLevelStars]
   );
 
   return (
@@ -167,6 +172,11 @@ export default function LevelMap() {
                       <Star key={i} size={10} className="fill-yellow-400 text-yellow-400" />
                     ))}
                   </div>
+                  {isCustomCase(level.id) && (
+                    <div className="absolute top-2 left-2 px-2 py-0.5 bg-[#F9A825] text-[#1B5E20] text-xs font-bold rounded-full">
+                      教师布置
+                    </div>
+                  )}
                 </div>
 
                 <div className="p-4">

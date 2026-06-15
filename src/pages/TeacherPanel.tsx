@@ -19,12 +19,6 @@ const SCENE_OPTIONS: { value: SceneType; label: string }[] = [
   { value: 'scatter', label: '零散地块' },
 ]
 
-const MOCK_STUDENTS = [
-  { id: 's1', name: '张三' },
-  { id: 's2', name: '李四' },
-  { id: 's3', name: '王五' },
-]
-
 const METRIC_LABELS: Record<string, string> = {
   acreEfficiency: '亩效',
   onTimeRate: '准时率',
@@ -60,11 +54,22 @@ const DEFAULT_FORM: CaseFormData = {
 }
 
 export default function TeacherPanel() {
-  const { customCases, studentRecords, addCustomCase } = useGameStore()
+  const {
+    customCases,
+    studentRecords,
+    levels,
+    addCustomCase,
+    deleteCustomCase,
+    assignCaseToStudent,
+    unassignCaseFromStudent,
+    getAllStudents,
+    availableLevels,
+  } = useGameStore()
   const [activeTab, setActiveTab] = useState<'cases' | 'records'>('cases')
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [form, setForm] = useState<CaseFormData>(DEFAULT_FORM)
-  const [selectedStudentId, setSelectedStudentId] = useState('s1')
+  const allStudents = getAllStudents()
+  const [selectedStudentId, setSelectedStudentId] = useState(allStudents[0]?.id ?? '')
   const [assigningCaseId, setAssigningCaseId] = useState<string | null>(null)
 
   const handleCreateCase = () => {
@@ -128,26 +133,30 @@ export default function TeacherPanel() {
   const handleAssignStudent = (caseId: string, studentId: string) => {
     const caseItem = customCases.find((c) => c.id === caseId)
     if (!caseItem) return
-    if (caseItem.assignedStudents.includes(studentId)) return
-    const updated: CustomCase = {
-      ...caseItem,
-      assignedStudents: [...caseItem.assignedStudents, studentId],
+    if (caseItem.assignedStudents.includes(studentId)) {
+      unassignCaseFromStudent(caseId, studentId)
+    } else {
+      assignCaseToStudent(caseId, studentId)
     }
-    useGameStore.setState((state) => ({
-      customCases: state.customCases.map((c) => (c.id === caseId ? updated : c)),
-    }))
-    setAssigningCaseId(null)
   }
 
   const handleDeleteCase = (caseId: string) => {
-    useGameStore.setState((state) => ({
-      customCases: state.customCases.filter((c) => c.id !== caseId),
-    }))
+    if (confirm('确定删除此自定义案例？')) {
+      deleteCustomCase(caseId)
+    }
   }
 
-  const studentAttempts = useMemo(() => {
-    return studentRecords.filter((r) => r.studentId === selectedStudentId)
-  }, [studentRecords, selectedStudentId])
+  const studentLevelRecords = studentRecords.filter((r) => r.studentId === selectedStudentId)
+
+  const allLevels = useMemo(() => {
+    const customLevels = customCases.map((c) => c.level)
+    return [...levels, ...customLevels]
+  }, [levels, customCases])
+
+  const getLevelName = (levelId: string) => {
+    const level = allLevels.find((l) => l.id === levelId)
+    return level?.name ?? levelId
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -270,7 +279,7 @@ export default function TeacherPanel() {
                 onChange={(e) => setSelectedStudentId(e.target.value)}
                 className="px-4 py-2 rounded-lg border border-gray-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-300"
               >
-                {MOCK_STUDENTS.map((s) => (
+                {allStudents.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.name}
                   </option>
@@ -278,27 +287,28 @@ export default function TeacherPanel() {
               </select>
             </div>
 
-            {studentAttempts.length === 0 ? (
+            {studentLevelRecords.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-20 text-gray-400">
                 <Star className="w-12 h-12 mb-3" />
                 <p className="text-sm">该学员暂无作业记录</p>
               </div>
             ) : (
               <div className="space-y-6">
-                {studentAttempts.map((record) => {
-                  const levelName = record.levelId
+                {studentLevelRecords.map((record) => {
+                  const levelName = getLevelName(record.levelId)
                   const plans = record.plans
+                  const sortedPlans = [...plans].sort((a, b) => a.timestamp - b.timestamp)
                   return (
                     <div key={record.levelId} className="bg-white rounded-xl shadow-sm p-5">
                       <h3 className="font-semibold text-gray-800 mb-3">{levelName}</h3>
 
                       <div className="space-y-2 mb-5">
-                        {plans.map((plan, idx) => (
+                        {sortedPlans.map((plan, idx) => (
                           <div
                             key={idx}
                             className="flex items-center gap-4 px-3 py-2 rounded-lg bg-gray-50 text-sm"
                           >
-                            <span className="text-gray-500 w-20">
+                            <span className="text-gray-500 w-24">
                               {new Date(plan.timestamp).toLocaleDateString()}
                             </span>
                             <span className="flex items-center gap-1">
@@ -314,26 +324,26 @@ export default function TeacherPanel() {
                               ))}
                             </span>
                             <span className="text-gray-600">
-                              亩效 {plan.result.acreEfficiency}
+                              亩效 {Math.round(plan.result.acreEfficiency)}
                             </span>
                             <span className="text-gray-600">
-                              准时 {plan.result.onTimeRate}
+                              准时 {Math.round(plan.result.onTimeRate)}
                             </span>
                             <span className="text-gray-600">
-                              安全 {plan.result.safetyScore}
+                              安全 {Math.round(plan.result.safetyScore)}
                             </span>
                             <span className="text-gray-600">
-                              成本 {plan.result.costScore}
+                              成本 {Math.round(plan.result.costScore)}
                             </span>
                           </div>
                         ))}
                       </div>
 
-                      {plans.length >= 2 && (
+                      {sortedPlans.length >= 2 && (
                         <div>
                           <h4 className="text-xs font-semibold text-gray-500 mb-2">成绩趋势</h4>
                           <div className="flex items-end gap-2 h-32 px-2">
-                            {plans.map((plan, idx) => (
+                            {sortedPlans.map((plan, idx) => (
                               <div key={idx} className="flex-1 flex flex-col items-center gap-1">
                                 <div className="flex items-end gap-0.5 h-24">
                                   {(['acreEfficiency', 'onTimeRate', 'safetyScore', 'costScore'] as const).map(
@@ -529,22 +539,25 @@ export default function TeacherPanel() {
             >
               <h3 className="text-base font-bold mb-4" style={{ color: '#1B5E20' }}>分配学员</h3>
               <div className="space-y-2">
-                {MOCK_STUDENTS.map((s) => {
+                {allStudents.map((s) => {
                   const caseItem = customCases.find((c) => c.id === assigningCaseId)
-                  const isAssigned = caseItem?.assignedStudents.includes(s.id)
+                  const isAssigned = caseItem?.assignedStudents.includes(s.id) ?? false
                   return (
                     <button
                       key={s.id}
-                      onClick={() => handleAssignStudent(assigningCaseId, s.id)}
-                      disabled={isAssigned}
+                      onClick={() => handleAssignStudent(assigningCaseId!, s.id)}
                       className={`w-full text-left px-4 py-2.5 rounded-lg text-sm transition ${
                         isAssigned
-                          ? 'bg-green-50 text-green-700 cursor-default'
+                          ? 'bg-green-50 text-green-700'
                           : 'hover:bg-gray-50 text-gray-700'
                       }`}
                     >
-                      {s.name}
-                      {isAssigned && <span className="ml-2 text-xs text-green-500">已分配</span>}
+                      <span className="flex items-center justify-between">
+                        <span>{s.name}</span>
+                        <span className="text-xs">
+                          {isAssigned ? '点击取消' : '点击分配'}
+                        </span>
+                      </span>
                     </button>
                   )
                 })}

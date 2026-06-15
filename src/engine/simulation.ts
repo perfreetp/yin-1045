@@ -8,11 +8,14 @@ import type {
   RandomEvent,
   StarCount,
   MetricType,
+  DroneModel,
 } from '@/types';
 
-const CELL_SIZE = 10;
+const CELL_SIZE = 5;
 const SPRAY_EFFICIENCY = 0.8;
 const SUPPLY_STOP_MINUTES = 2;
+const PIXELS_PER_METER = 2;
+const MU_PER_SQUARE_PIXEL = 25 / (270 * 200);
 
 function isPointInPolygon(point: Point, polygon: Point[]): boolean {
   let inside = false;
@@ -38,7 +41,7 @@ function getBounds(polygons: Point[][]): { minX: number; minY: number; maxX: num
       if (p.y > maxY) maxY = p.y;
     }
   }
-  return { minX, minY, maxX, maxY };
+  return { minX: Math.floor(minX - 10), minY: Math.floor(minY - 10), maxX: Math.ceil(maxX + 10), maxY: Math.ceil(maxY + 10) };
 }
 
 function segmentCoverageCells(
@@ -51,8 +54,10 @@ function segmentCoverageCells(
   const dx = p2.x - p1.x;
   const dy = p2.y - p1.y;
   const len = Math.sqrt(dx * dx + dy * dy);
-  if (len === 0) {
-    const halfW = sprayWidth / 2;
+
+  const halfW = sprayWidth / 2;
+
+  if (len < 0.5) {
     const cx0 = Math.floor((p1.x - halfW - bounds.minX) / CELL_SIZE);
     const cy0 = Math.floor((p1.y - halfW - bounds.minY) / CELL_SIZE);
     const cx1 = Math.floor((p1.x + halfW - bounds.minX) / CELL_SIZE);
@@ -65,27 +70,33 @@ function segmentCoverageCells(
     return cells;
   }
 
-  const ux = dx / len;
-  const uy = dy / len;
-  const perpX = -uy;
-  const perpY = ux;
-  const halfW = sprayWidth / 2;
-  const steps = Math.max(Math.ceil(len / (CELL_SIZE / 2)), 1);
-
+  const steps = Math.max(Math.ceil(len / 2), 3);
   for (let s = 0; s <= steps; s++) {
     const t = s / steps;
     const px = p1.x + dx * t;
     const py = p1.y + dy * t;
-    const cx0 = Math.floor((px + perpX * halfW - bounds.minX) / CELL_SIZE);
-    const cy0 = Math.floor((py + perpY * halfW - bounds.minY) / CELL_SIZE);
-    const cx1 = Math.floor((px - perpX * halfW - bounds.minX) / CELL_SIZE);
-    const cy1 = Math.floor((py - perpY * halfW - bounds.minY) / CELL_SIZE);
-    const minCx = Math.min(cx0, cx1);
-    const maxCx = Math.max(cx0, cx1);
-    const minCy = Math.min(cy0, cy1);
-    const maxCy = Math.max(cy0, cy1);
-    for (let cx = minCx; cx <= maxCx; cx++) {
-      for (let cy = minCy; cy <= maxCy; cy++) {
+
+    const angle = Math.atan2(dy, dx);
+    const perpX = -Math.sin(angle);
+    const perpY = Math.cos(angle);
+
+    const x0 = px + perpX * halfW;
+    const y0 = py + perpY * halfW;
+    const x1 = px - perpX * halfW;
+    const y1 = py - perpY * halfW;
+
+    const minPx = Math.min(x0, x1);
+    const maxPx = Math.max(x0, x1);
+    const minPy = Math.min(y0, y1);
+    const maxPy = Math.max(y0, y1);
+
+    const cx0 = Math.floor((minPx - bounds.minX) / CELL_SIZE);
+    const cy0 = Math.floor((minPy - bounds.minY) / CELL_SIZE);
+    const cx1 = Math.floor((maxPx - bounds.minX) / CELL_SIZE);
+    const cy1 = Math.floor((maxPy - bounds.minY) / CELL_SIZE);
+
+    for (let cx = cx0; cx <= cx1; cx++) {
+      for (let cy = cy0; cy <= cy1; cy++) {
         cells.add(`${cx},${cy}`);
       }
     }
@@ -93,9 +104,16 @@ function segmentCoverageCells(
   return cells;
 }
 
+function getDroneModel(plan: DispatchPlan, routeId: string, droneList: DroneModel[]): DroneModel | null {
+  const route = plan.routes.find((r) => r.id === routeId);
+  if (!route || !route.droneModelId) return null;
+  return droneList.find((d) => d.id === route.droneModelId) ?? null;
+}
+
 export function calculateCoverage(
   plan: DispatchPlan,
   level: Level,
+  droneList: DroneModel[],
 ): {
   overlapPercentage: number;
   missPercentage: number;
@@ -107,11 +125,10 @@ export function calculateCoverage(
   const routeCoverSets: Map<string, Set<string>> = new Map();
 
   for (const route of plan.routes) {
-    const droneModel = { sprayWidth: 5 };
-    for (const availId of level.availableDrones) {
-      void availId;
-    }
-    const sprayWidth = route.waypoints.length > 0 ? 6 : droneModel.sprayWidth;
+    const drone = getDroneModel(plan, route.id, droneList);
+    const sprayWidthMeters = drone?.sprayWidth ?? 4;
+    const sprayWidthPixels = sprayWidthMeters * PIXELS_PER_METER;
+
     const covered = new Set<string>();
     for (let i = 0; i < route.waypoints.length - 1; i++) {
       const w1 = route.waypoints[i];
@@ -120,7 +137,7 @@ export function calculateCoverage(
       const segCells = segmentCoverageCells(
         { x: w1.x, y: w1.y },
         { x: w2.x, y: w2.y },
-        sprayWidth,
+        sprayWidthPixels,
         bounds,
       );
       for (const c of segCells) covered.add(c);
@@ -128,28 +145,22 @@ export function calculateCoverage(
     routeCoverSets.set(route.id, covered);
   }
 
-  const fieldCellCounts: number[] = [];
-  let totalFieldCells = 0;
+  const allFieldCells = new Set<string>();
   for (const field of level.fields) {
-    let count = 0;
-    const fMinX = Math.floor((bounds.minX) / CELL_SIZE);
-    const fMinY = Math.floor((bounds.minY) / CELL_SIZE);
-    const fMaxX = Math.ceil((bounds.maxX) / CELL_SIZE);
-    const fMaxY = Math.ceil((bounds.maxY) / CELL_SIZE);
-    for (let cx = fMinX; cx <= fMaxX; cx++) {
-      for (let cy = fMinY; cy <= fMaxY; cy++) {
+    for (let cx = -2; cx < 200; cx++) {
+      for (let cy = -2; cy < 150; cy++) {
         const cellCenter: Point = {
           x: bounds.minX + cx * CELL_SIZE + CELL_SIZE / 2,
           y: bounds.minY + cy * CELL_SIZE + CELL_SIZE / 2,
         };
         if (isPointInPolygon(cellCenter, field.polygon)) {
-          count++;
+          allFieldCells.add(`${cx},${cy}`);
         }
       }
     }
-    fieldCellCounts.push(count);
-    totalFieldCells += count;
   }
+
+  const totalFieldCells = allFieldCells.size;
 
   if (totalFieldCells === 0) {
     return {
@@ -164,27 +175,6 @@ export function calculateCoverage(
   let coveredCount = 0;
   const overlapCellKeys: string[] = [];
   const missedCellKeys: string[] = [];
-
-  const allFieldCells = new Set<string>();
-  for (let fi = 0; fi < level.fields.length; fi++) {
-    const field = level.fields[fi];
-    const fMinX = Math.floor(bounds.minX / CELL_SIZE);
-    const fMinY = Math.floor(bounds.minY / CELL_SIZE);
-    const fMaxX = Math.ceil(bounds.maxX / CELL_SIZE);
-    const fMaxY = Math.ceil(bounds.maxY / CELL_SIZE);
-    for (let cx = fMinX; cx <= fMaxX; cx++) {
-      for (let cy = fMinY; cy <= fMaxY; cy++) {
-        const key = `${cx},${cy}`;
-        const cellCenter: Point = {
-          x: bounds.minX + cx * CELL_SIZE + CELL_SIZE / 2,
-          y: bounds.minY + cy * CELL_SIZE + CELL_SIZE / 2,
-        };
-        if (isPointInPolygon(cellCenter, field.polygon)) {
-          allFieldCells.add(key);
-        }
-      }
-    }
-  }
 
   for (const cellKey of allFieldCells) {
     let routeCount = 0;
@@ -280,54 +270,31 @@ export function checkDangerousCrossings(
   const suggestions: Suggestion[] = [];
 
   for (const route of plan.routes) {
-    for (let i = 0; i < route.waypoints.length; i++) {
-      const wp = route.waypoints[i];
-      const point: Point = { x: wp.x, y: wp.y };
-      for (const obstacle of level.obstacles) {
-        if (isPointInPolygon(point, obstacle.polygon)) {
-          const fieldIds = route.targetFieldIds;
-          suggestions.push({
-            type: 'danger',
-            severity: obstacle.type === 'powerline' ? 'high' : 'medium',
-            message: `航线 ${route.id} 的航点 ${i + 1} 穿越障碍物「${obstacle.name}」(${obstacle.type})`,
-            relatedRouteIds: [route.id],
-            relatedFieldIds: fieldIds,
-          });
-        }
-      }
-    }
+    const foundObstacles = new Set<string>();
 
     for (let i = 0; i < route.waypoints.length - 1; i++) {
       const w1 = route.waypoints[i];
       const w2 = route.waypoints[i + 1];
-      const steps = Math.max(
-        Math.ceil(
-          Math.sqrt((w2.x - w1.x) ** 2 + (w2.y - w1.y) ** 2) / 10,
-        ),
-        1,
-      );
-      for (let s = 1; s < steps; s++) {
+      const dist = Math.sqrt((w2.x - w1.x) ** 2 + (w2.y - w1.y) ** 2);
+      const steps = Math.max(Math.ceil(dist / 8), 2);
+
+      for (let s = 0; s <= steps; s++) {
         const t = s / steps;
         const point: Point = {
           x: w1.x + (w2.x - w1.x) * t,
           y: w1.y + (w2.y - w1.y) * t,
         };
         for (const obstacle of level.obstacles) {
+          if (foundObstacles.has(obstacle.id)) continue;
           if (isPointInPolygon(point, obstacle.polygon)) {
-            const already = suggestions.some(
-              (sg) =>
-                sg.relatedRouteIds.includes(route.id) &&
-                sg.message.includes(obstacle.name),
-            );
-            if (!already) {
-              suggestions.push({
-                type: 'danger',
-                severity: obstacle.type === 'powerline' ? 'high' : 'medium',
-                message: `航线 ${route.id} 的航段 ${i + 1}-${i + 2} 穿越障碍物「${obstacle.name}」(${obstacle.type})`,
-                relatedRouteIds: [route.id],
-                relatedFieldIds: route.targetFieldIds,
-              });
-            }
+            foundObstacles.add(obstacle.id);
+            suggestions.push({
+              type: 'danger',
+              severity: obstacle.type === 'powerline' ? 'high' : 'medium',
+              message: `航线「${route.id.slice(0, 6)}」穿越障碍物「${obstacle.name}」`,
+              relatedRouteIds: [route.id],
+              relatedFieldIds: route.targetFieldIds,
+            });
           }
         }
       }
@@ -337,39 +304,57 @@ export function checkDangerousCrossings(
   return suggestions;
 }
 
-export function calculateTotalTime(plan: DispatchPlan, level: Level): number {
+export function calculateTotalTime(
+  plan: DispatchPlan,
+  level: Level,
+  droneList: DroneModel[],
+): number {
   let maxTime = 0;
 
   for (const route of plan.routes) {
-    let routeTime = 0;
+    const drone = getDroneModel(plan, route.id, droneList);
+    if (!drone) continue;
+
+    let totalDistance = 0;
     for (let i = 0; i < route.waypoints.length - 1; i++) {
       const w1 = route.waypoints[i];
       const w2 = route.waypoints[i + 1];
-      const dist = Math.sqrt((w2.x - w1.x) ** 2 + (w2.y - w1.y) ** 2);
-      const speed = (w1.speed + w2.speed) / 2;
-      routeTime += speed > 0 ? dist / speed : 0;
+      totalDistance += Math.sqrt((w2.x - w1.x) ** 2 + (w2.y - w1.y) ** 2);
     }
-    routeTime += route.supplyPoints.length * SUPPLY_STOP_MINUTES;
+
+    const distanceMeters = totalDistance / PIXELS_PER_METER;
+    const speedMps = drone.speed;
+    const flightMinutes = distanceMeters / speedMps / 60;
+    const supplyMinutes = route.supplyPoints.length * SUPPLY_STOP_MINUTES;
+    const routeTime = flightMinutes + supplyMinutes;
+
     if (routeTime > maxTime) maxTime = routeTime;
   }
 
   return maxTime;
 }
 
-export function calculateTotalCost(plan: DispatchPlan, level: Level): number {
+export function calculateTotalCost(
+  plan: DispatchPlan,
+  level: Level,
+  droneList: DroneModel[],
+): number {
   let totalCost = 0;
 
   for (const route of plan.routes) {
+    const drone = getDroneModel(plan, route.id, droneList);
+    if (!drone) continue;
+
     const targetFields = level.fields.filter((f) =>
       route.targetFieldIds.includes(f.id),
     );
-    const coveredArea = targetFields.reduce((sum, f) => sum + f.area, 0);
-    const payload = 50;
-    const sorties = Math.ceil(
-      coveredArea / (payload * SPRAY_EFFICIENCY),
-    );
-    const costPerSortie = 100;
-    totalCost += sorties * costPerSortie;
+    const coveredAreaMu = targetFields.reduce((sum, f) => sum + f.area, 0);
+
+    const litersPerMu = 0.8;
+    const chemicalNeeded = coveredAreaMu * litersPerMu;
+    const sorties = Math.ceil(chemicalNeeded / (drone.payload * SPRAY_EFFICIENCY));
+
+    totalCost += sorties * drone.costPerSortie;
   }
 
   for (const purchase of plan.purchases) {
@@ -379,44 +364,61 @@ export function calculateTotalCost(plan: DispatchPlan, level: Level): number {
   return totalCost;
 }
 
+export function canEvaluate(plan: DispatchPlan): { ok: boolean; reason?: string } {
+  if (plan.routes.length === 0) {
+    return { ok: false, reason: '请至少创建一条航线' };
+  }
+  for (const route of plan.routes) {
+    if (!route.droneModelId) {
+      return { ok: false, reason: `航线「${route.id.slice(0, 6)}」尚未选择机型` };
+    }
+    if (route.waypoints.length < 2) {
+      return { ok: false, reason: `航线「${route.id.slice(0, 6)}」至少需要 2 个航点` };
+    }
+  }
+  return { ok: true };
+}
+
 export function evaluatePlan(
   plan: DispatchPlan,
   level: Level,
+  droneList: DroneModel[],
 ): SimulationResult {
-  const coverage = calculateCoverage(plan, level);
+  const coverage = calculateCoverage(plan, level, droneList);
   const dangerSuggestions = checkDangerousCrossings(plan, level);
-  const totalTime = calculateTotalTime(plan, level);
-  const totalCost = calculateTotalCost(plan, level);
+  const totalTime = calculateTotalTime(plan, level, droneList);
+  const totalCost = calculateTotalCost(plan, level, droneList);
 
   const acreEfficiency = Math.max(
     0,
     Math.min(
       100,
-      100 - coverage.overlapPercentage * 2 - coverage.missPercentage * 1.5,
+      100 - coverage.overlapPercentage * 1.5 - coverage.missPercentage * 2.5,
     ),
   );
 
-  const onTimeRate = Math.max(
-    0,
-    100 - Math.max(0, (totalTime - level.timeLimit) / level.timeLimit) * 100,
-  );
+  const onTimeRate =
+    totalTime <= level.timeLimit
+      ? 100
+      : Math.max(0, 100 - ((totalTime - level.timeLimit) / level.timeLimit) * 80);
 
-  const activeEvents = getActiveEvents(level.events, 50);
   const safetyScore = Math.max(
     0,
-    100 - dangerSuggestions.length * 15 - activeEvents.length * 5,
+    100 - dangerSuggestions.length * 20,
   );
 
   const budgetRatio = totalCost / level.budget;
-  const costScore = Math.max(0, Math.min(100, 100 - (budgetRatio - 0.5) * 100));
+  const costScore = budgetRatio <= 0.8
+    ? 100
+    : Math.max(0, 100 - (budgetRatio - 0.8) * 150);
 
   const suggestions: Suggestion[] = [];
 
-  if (coverage.overlapPercentage > 5) {
+  if (coverage.overlapPercentage > 3) {
     suggestions.push({
       type: 'overlap',
-      severity: coverage.overlapPercentage > 20 ? 'high' : 'medium',
-      message: `喷洒重叠率为 ${coverage.overlapPercentage.toFixed(1)}%，建议优化航线减少重叠`,
+      severity: coverage.overlapPercentage > 15 ? 'high' : coverage.overlapPercentage > 8 ? 'medium' : 'low',
+      message: `重复喷洒率 ${coverage.overlapPercentage.toFixed(1)}%，建议优化航线间距减少浪费`,
       relatedRouteIds: plan.routes.map((r) => r.id),
       relatedFieldIds: level.fields.map((f) => f.id),
     });
@@ -425,8 +427,8 @@ export function evaluatePlan(
   if (coverage.missPercentage > 5) {
     suggestions.push({
       type: 'miss',
-      severity: coverage.missPercentage > 20 ? 'high' : 'medium',
-      message: `漏喷率为 ${coverage.missPercentage.toFixed(1)}%，建议增加航线覆盖遗漏区域`,
+      severity: coverage.missPercentage > 20 ? 'high' : coverage.missPercentage > 10 ? 'medium' : 'low',
+      message: `漏喷率 ${coverage.missPercentage.toFixed(1)}%，建议增加航线覆盖遗漏区域`,
       relatedRouteIds: plan.routes.map((r) => r.id),
       relatedFieldIds: level.fields.map((f) => f.id),
     });
@@ -438,35 +440,20 @@ export function evaluatePlan(
     suggestions.push({
       type: 'inefficient',
       severity: 'medium',
-      message: `作业效率仅 ${acreEfficiency.toFixed(1)} 分，低于 70 分阈值，建议调整航线规划`,
+      message: `作业效率 ${acreEfficiency.toFixed(0)} 分，建议参考知识图鉴优化航线布局`,
       relatedRouteIds: plan.routes.map((r) => r.id),
       relatedFieldIds: [],
     });
   }
 
-  for (const route of plan.routes) {
-    if (route.waypoints.length >= 2) {
-      let lastFieldEnd = -1;
-      for (let i = 1; i < route.waypoints.length; i++) {
-        const w1 = route.waypoints[i - 1];
-        const w2 = route.waypoints[i];
-        const dist = Math.sqrt((w2.x - w1.x) ** 2 + (w2.y - w1.y) ** 2);
-        const speed = (w1.speed + w2.speed) / 2;
-        const segTime = speed > 0 ? dist / speed : 0;
-        if (segTime > 5 && !w1.isSpraying && !w2.isSpraying) {
-          if (lastFieldEnd >= 0 && i - lastFieldEnd > 1) {
-            suggestions.push({
-              type: 'wait',
-              severity: 'low',
-              message: `航线 ${route.id} 在航段 ${i}-${i + 1} 存在超过 5 分钟的空飞等待`,
-              relatedRouteIds: [route.id],
-              relatedFieldIds: route.targetFieldIds,
-            });
-          }
-        }
-        if (w2.isSpraying) lastFieldEnd = i;
-      }
-    }
+  if (budgetRatio > 1) {
+    suggestions.push({
+      type: 'inefficient',
+      severity: 'high',
+      message: `超出预算 ${((budgetRatio - 1) * 100).toFixed(0)}%，建议更换机型或减少采购`,
+      relatedRouteIds: plan.routes.map((r) => r.id),
+      relatedFieldIds: [],
+    });
   }
 
   const metrics: Record<MetricType, number> = {
